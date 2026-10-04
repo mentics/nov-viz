@@ -6,15 +6,73 @@ use gpui::*;
 use gpui_flow::*;
 use gpui_platform::application;
 use crate::{
-    EDGE_LEGEND, EdgeLayer, GraphController, Keymap, NavVisual, NovGraph, NovMinimap, Projection, build_flow_graph, layout,
+    EDGE_LEGEND, EdgeLayer, GraphController, Keymap, LayoutResult, NavVisual, NovGraph, NovMinimap, Projection,
+    build_flow_graph, layout,
 };
 
 const BG: u32 = 0x09090b;
 const HUD: u32 = 0x18181b;
 const TEXT: u32 = 0xfafafa;
 const TEXT_DIM: u32 = 0xa1a1aa;
+const TAB_ACTIVE: u32 = 0x3b82f6;
+const TAB_ACTIVE_BG: u32 = 0x1e3a5f;
+
+/// A named graph the viewer can switch to from the tab bar.
+pub struct NovView {
+    pub name: String,
+    pub graph: NovGraph,
+}
+
+impl NovView {
+    pub fn new(name: impl Into<String>, graph: NovGraph) -> Self {
+        Self { name: name.into(), graph }
+    }
+}
+
+struct LoadedView {
+    name: String,
+    graph: NovGraph,
+    laid_out: LayoutResult,
+}
+
+/// Everything that is rebuilt when the active view changes.
+struct Scene {
+    flow: Entity<FlowGraph>,
+    state: Entity<FlowState>,
+    minimap: Entity<NovMinimap>,
+    edge_layer: Entity<EdgeLayer>,
+    controls: Entity<Controls>,
+    visual: Entity<NavVisual>,
+    graph: NovGraph,
+    nav: GraphController,
+}
+
+impl Scene {
+    fn build(view: &LoadedView, cx: &mut App) -> Self {
+        let visual = cx.new(|_| NavVisual::default());
+        let (state, flow) = build_flow_graph(&view.laid_out, visual.clone(), cx);
+
+        state.update(cx, |state, _| {
+            state.fit_view(64.0, 1200.0, 800.0);
+        });
+
+        let mut nav = GraphController::new();
+        state.update(cx, |flow_state, _| {
+            nav.seed_cursor(flow_state);
+            nav.sync_flow_selection(flow_state);
+        });
+        visual.update(cx, |slot, _| *slot = nav.visual());
+
+        let minimap = cx.new(|_| NovMinimap::new(state.clone()).container_bounds(1200.0, 800.0));
+        let edge_layer = cx.new(|_| EdgeLayer::new(state.clone()));
+        let controls = cx.new(|_| Controls::new(state.clone()).container_size(1200.0, 800.0));
+        Self { flow, state, minimap, edge_layer, controls, visual, graph: view.graph.clone(), nav }
+    }
+}
 
 struct GraphView {
+    views: Vec<LoadedView>,
+    active: usize,
     flow: Entity<FlowGraph>,
     state: Entity<FlowState>,
     minimap: Entity<NovMinimap>,
@@ -42,6 +100,24 @@ impl GraphView {
         self.flow.update(cx, |_, cx| cx.notify());
         self.minimap.update(cx, |_, cx| cx.notify());
         self.edge_layer.update(cx, |_, cx| cx.notify());
+    }
+
+    fn select_view(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index == self.active || index >= self.views.len() {
+            return;
+        }
+        let scene = Scene::build(&self.views[index], cx);
+        self.active = index;
+        self.flow = scene.flow;
+        self.state = scene.state;
+        self.minimap = scene.minimap;
+        self.edge_layer = scene.edge_layer;
+        self.controls = scene.controls;
+        self.visual = scene.visual;
+        self.graph = scene.graph;
+        self.nav = scene.nav;
+        self.keys_down.clear();
+        cx.notify();
     }
 
     fn size_of(window: &Window) -> (f32, f32) {
@@ -161,6 +237,22 @@ impl Render for GraphView {
         let hud = self.nav.hud_line();
         let editing = self.nav.editing.is_some();
         let edit_buffer = self.nav.edit_buffer.clone();
+        let tabs = self.views.iter().enumerate().map(|(i, view)| {
+            let active = i == self.active;
+            div()
+                .id(("view-tab", i))
+                .px_3()
+                .py_1()
+                .rounded_md()
+                .text_sm()
+                .cursor_pointer()
+                .border_1()
+                .border_color(gpui::rgb(if active { TAB_ACTIVE } else { HUD }))
+                .bg(gpui::rgb(if active { TAB_ACTIVE_BG } else { HUD }))
+                .text_color(gpui::rgb(if active { TEXT } else { TEXT_DIM }))
+                .child(view.name.clone())
+                .on_click(cx.listener(move |this, _, _, cx| this.select_view(i, cx)))
+        });
 
         div()
             .id("nov-viz")
@@ -183,10 +275,11 @@ impl Render for GraphView {
             }))
             .child(self.flow.clone())
             .child(self.edge_layer.clone())
+            .child(div().absolute().top(px(12.0)).left(px(12.0)).flex().gap_2().children(tabs))
             .child(
                 div()
                     .absolute()
-                    .top(px(12.0))
+                    .top(px(52.0))
                     .left(px(12.0))
                     .right(px(12.0))
                     .px_3()
@@ -201,7 +294,7 @@ impl Render for GraphView {
                 el.child(
                     div()
                         .absolute()
-                        .top(px(44.0))
+                        .top(px(92.0))
                         .right(px(12.0))
                         .px_3()
                         .py_2()
@@ -252,9 +345,23 @@ impl Render for GraphView {
 
 /// Lay out `graph` and open an interactive window showing it. Blocks until the window closes.
 pub fn show(graph: NovGraph, title: &str) -> anyhow::Result<()> {
-    let laid_out = layout(&graph, Projection::Flow)?;
+    show_views(vec![NovView::new("Graph", graph)], title)
+}
+
+/// Open a window with one tab per view; clicking a tab switches the displayed graph.
+pub fn show_views(views: Vec<NovView>, title: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(!views.is_empty(), "no views to show");
+    let views = views
+        .into_iter()
+        .map(|v| {
+            let laid_out = layout(&v.graph, Projection::Flow)?;
+            Ok(LoadedView { name: v.name, graph: v.graph, laid_out })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
     let title = title.to_string();
+    let mut views = Some(views);
     application().run(move |cx: &mut App| {
+        let views = views.take().expect("run closure called once");
         let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
 
         cx.open_window(
@@ -267,25 +374,8 @@ pub fn show(graph: NovGraph, title: &str) -> anyhow::Result<()> {
                 ..Default::default()
             },
             |window, cx| {
-                let visual = cx.new(|_| NavVisual::default());
-                let (state, flow) = build_flow_graph(&laid_out, visual.clone(), cx);
-
-                state.update(cx, |state, _| {
-                    state.fit_view(64.0, 1200.0, 800.0);
-                });
-
-                let mut nav = GraphController::new();
-                state.update(cx, |flow_state, _| {
-                    nav.seed_cursor(flow_state);
-                    nav.sync_flow_selection(flow_state);
-                });
-                visual.update(cx, |slot, _| *slot = nav.visual());
-
-                let minimap =
-                    cx.new(|_| NovMinimap::new(state.clone()).container_bounds(1200.0, 800.0));
-                let edge_layer = cx.new(|_| EdgeLayer::new(state.clone()));
-                let controls =
-                    cx.new(|_| Controls::new(state.clone()).container_size(1200.0, 800.0));
+                let Scene { flow, state, minimap, edge_layer, controls, visual, graph, nav } =
+                    Scene::build(&views[0], cx);
 
                 cx.new(|cx| {
                     let focus_handle = cx.focus_handle();
@@ -326,6 +416,8 @@ pub fn show(graph: NovGraph, title: &str) -> anyhow::Result<()> {
                     });
 
                     GraphView {
+                        views,
+                        active: 0,
                         flow,
                         state,
                         minimap,

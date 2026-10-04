@@ -14,7 +14,8 @@ use crate::scale::card_scale;
 const RADIUS: f32 = 10.0;
 const ARROW: f32 = 8.0;
 const STROKE: f32 = 2.0;
-const DEFAULT_SIZE: (f32, f32) = (176.0, 60.0);
+/// Wide and tall enough for a two-line label under the kind line.
+pub const DEFAULT_SIZE: (f32, f32) = (280.0, 76.0);
 
 pub struct EdgeLayer {
     state: Entity<FlowState>,
@@ -31,7 +32,7 @@ impl EdgeLayer {
 
 /// Every card is laid out at this size (flow units); what is drawn is this
 /// times `card_scale`. gpui-flow's measured size is zoomed pixels and lags.
-fn layout_size() -> (f32, f32) {
+pub fn layout_size() -> (f32, f32) {
     DEFAULT_SIZE
 }
 

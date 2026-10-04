@@ -80,9 +80,8 @@ impl GraphController {
             Depth::Node => "node",
             Depth::Edit => "edit",
         };
-        let cur = self.cursor.as_deref().unwrap_or("—");
         format!(
-            "{depth}  cursor:{cur}  sel:{}  |  WASD move  E/R out/in  Shift+WASD pan  Shift+E/R zoom  G fit  Q edit  F new  C connect  X del",
+            "{depth}  sel:{}  |  WASD move  E/R out/in  Shift+WASD pan  Shift+E/R zoom  G fit  Q edit  F new  C connect  X del",
             self.selected.len()
         )
     }

@@ -10,6 +10,8 @@ const ACCENT_BLUE: u32 = 0x3b82f6;
 const ACCENT_AMBER: u32 = 0xf59e0b;
 const ACCENT_ROSE: u32 = 0xf43f5e;
 const ACCENT_VIOLET: u32 = 0xa78bfa;
+const ACCENT_TEAL: u32 = 0x2dd4bf;
+const ACCENT_PINK: u32 = 0xf472b6;
 const ACCENT_MUTED: u32 = 0x71717a;
 const CURSOR: u32 = 0xfafafa;
 const INTERIOR: u32 = 0x22d3ee;
@@ -17,11 +19,13 @@ const EDITING: u32 = 0xe8a87c;
 
 /// Edge types and their colours, for the legend (edges carry no inline labels:
 /// gpui-flow places them at the straight-line midpoint, over the nodes).
-pub const EDGE_LEGEND: [(&str, u32); 4] = [
+pub const EDGE_LEGEND: [(&str, u32); 6] = [
     ("depends_on", ACCENT_BLUE),
     ("blocks", ACCENT_ROSE),
     ("affects", ACCENT_AMBER),
     ("replaces", ACCENT_VIOLET),
+    ("calls", ACCENT_TEAL),
+    ("calls_external", ACCENT_PINK),
 ];
 
 /// The edge type is carried by the edge colour (gpui-flow's label is not used),
@@ -32,6 +36,8 @@ pub fn edge_type_for_color(color: Option<u32>) -> &'static str {
         Some(ACCENT_ROSE) => "blocks",
         Some(ACCENT_AMBER) => "affects",
         Some(ACCENT_VIOLET) => "replaces",
+        Some(ACCENT_TEAL) => "calls",
+        Some(ACCENT_PINK) => "calls_external",
         _ => "related",
     }
 }
@@ -77,6 +83,8 @@ fn edge_color(edge_type: &str) -> u32 {
         "blocks" => ACCENT_ROSE,
         "affects" => ACCENT_AMBER,
         "replaces" => ACCENT_VIOLET,
+        "calls" => ACCENT_TEAL,
+        "calls_external" => ACCENT_PINK,
         _ => ACCENT_MUTED,
     }
 }
@@ -94,14 +102,15 @@ pub fn build_flow_graph(
         state.max_zoom = 4.0;
         state
     });
-    let sizes: std::rc::Rc<std::collections::HashMap<String, (f32, f32)>> = std::rc::Rc::new(
+    let zoom_state = state.clone();
+    // The small line above a card's label: its first tag (e.g. "function").
+    let kinds: std::rc::Rc<std::collections::HashMap<String, String>> = std::rc::Rc::new(
         layout
             .nodes
             .iter()
-            .map(|n| (n.id.clone(), (n.width as f32, n.height as f32)))
+            .filter_map(|n| Some((n.id.clone(), n.tags.first()?.clone())))
             .collect(),
     );
-    let zoom_state = state.clone();
     let flow = cx.new(|cx| {
         FlowGraph::new(state.clone(), cx)
             .bg_color(0x09090b)
@@ -111,9 +120,12 @@ pub fn build_flow_graph(
             .node_renderer("nov-card", {
                 let visual = visual.clone();
                 move |node, window, cx| {
+                    let kind = kinds.get(node.id.as_ref()).cloned();
                     let scale = crate::scale::card_scale(zoom_state.read(cx).viewport.zoom);
-                    let (w, h) = sizes.get(node.id.as_ref()).copied().unwrap_or((176.0, 60.0));
-                    render_nov_card(node, &visual, (w * scale.size, h * scale.size), scale, window, cx)
+                    // Edges are routed to this same size (`edge_layer`), so
+                    // their ends land on the card's handles.
+                    let (w, h) = crate::edge_layer::layout_size();
+                    render_nov_card(node, kind, &visual, (w * scale.size, h * scale.size), scale, window, cx)
                 }
             })
     });
@@ -122,6 +134,7 @@ pub fn build_flow_graph(
 
 fn render_nov_card(
     node: &FlowNode,
+    kind: Option<String>,
     visual: &Entity<NavVisual>,
     (width, height): (f32, f32),
     scale: crate::scale::CardScale,
@@ -154,7 +167,6 @@ fn render_nov_card(
         0x27272a
     };
 
-    let tag = node.id.to_string();
     let label = if node.label.is_empty() {
         node.id.to_string()
     } else {
@@ -177,13 +189,15 @@ fn render_nov_card(
         .border_color(gpui::rgb(border))
         .rounded_md()
         .when(scale.text, |card| {
-            card.child(
-                div()
-                    .text_size(px(12.0 * scale.size))
-                    .text_color(gpui::rgb(TEXT_MUTED))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(tag),
-            )
+            card.when_some(kind, |card, kind| {
+                card.child(
+                    div()
+                        .text_size(px(11.0 * scale.size))
+                        .text_color(gpui::rgb(TEXT_MUTED))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(kind),
+                )
+            })
             .child(
                 div()
                     .text_size(px(14.0 * scale.size))
